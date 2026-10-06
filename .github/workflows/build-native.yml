@@ -5,50 +5,112 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          mkdir -p dist/linux
-          if [ -f Makefile ]; then make; fi
-          cp -r build/* dist/linux/ 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-linux
-          path: dist/linux
+  build:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            python: "3.11"
+            platform: linux-x86_64
+          - os: ubuntu-22.04
+            python: "3.12"
+            platform: linux-x86_64
+          - os: ubuntu-22.04
+            python: "3.13"
+            platform: linux-x86_64
+          - os: ubuntu-22.04
+            python: "3.14"
+            platform: linux-x86_64
+          - os: windows-2022
+            python: "3.11"
+            platform: windows-amd64
+          - os: windows-2022
+            python: "3.12"
+            platform: windows-amd64
+          - os: windows-2022
+            python: "3.13"
+            platform: windows-amd64
+          - os: windows-2022
+            python: "3.14"
+            platform: windows-amd64
+          - os: macos-14
+            python: "3.11"
+            platform: macos-arm64
+          - os: macos-14
+            python: "3.12"
+            platform: macos-arm64
+          - os: macos-14
+            python: "3.13"
+            platform: macos-arm64
+          - os: macos-14
+            python: "3.14"
+            platform: macos-arm64
 
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/windows | Out-Null
-          if (Test-Path Makefile) {
-            mingw32-make
-          }
-          if (Test-Path build) {
-            Copy-Item build/* dist/windows/ -Recurse -Force
-          }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-windows
-          path: dist/windows
+    runs-on: ${{ matrix.os }}
 
-  macos:
-    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          mkdir -p dist/macos
-          if [ -f Makefile ]; then make; fi
-          cp -r build/* dist/macos/ 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
-          name: native-macos
-          path: dist/macos
+          python-version: ${{ matrix.python }}
+
+      - name: Show toolchain
+        run: |
+          python --version
+          python -c "import platform,sys; print(platform.platform()); print(platform.machine()); print(sys.implementation.name)"
+
+      - name: Locate native build files
+        shell: bash
+        run: |
+          echo "Native sources:"
+          find native -type f | sort
+
+      - name: Build with Makefile
+        shell: bash
+        run: |
+          set -e
+          if find native -name Makefile -print -quit | grep -q .; then
+            make -C "$(dirname "$(find native -name Makefile -print -quit)")"
+          else
+            echo "No Makefile found; source-only artifact will be uploaded."
+          fi
+
+      - name: Build with CMake
+        shell: bash
+        run: |
+          set -e
+          if find native -name CMakeLists.txt -print -quit | grep -q .; then
+            SRC="$(dirname "$(find native -name CMakeLists.txt -print -quit)")"
+            cmake -S "$SRC" -B native-build
+            cmake --build native-build --config Release --parallel
+          else
+            echo "No CMakeLists.txt found; skipping CMake."
+          fi
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -e
+          mkdir -p "dist/${{ matrix.platform }}/py${{ matrix.python }}"
+
+          find native native-build -type f \
+            \( -name '*.so' -o -name '*.pyd' -o -name '*.dylib' \) \
+            -exec cp {} "dist/${{ matrix.platform }}/py${{ matrix.python }}/" \; 2>/dev/null || true
+
+          find "dist/${{ matrix.platform }}/py${{ matrix.python }}" -type f -print
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}-py${{ matrix.python }}
+          path: dist/
+          if-no-files-found: warn
